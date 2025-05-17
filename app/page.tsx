@@ -212,9 +212,9 @@ export default function VapiIntegration() {
                 // This is required by browsers for getUserMedia if not initiated by a user gesture on audio
                 try {
                     await navigator.mediaDevices.getUserMedia({ audio: true });
-                } catch (micError: any) {
+                } catch (micError) {
                     console.error("Microphone permission denied:", micError);
-                    setErrorMessage(`Microphone access needed to start call: ${micError.message}`);
+                    setErrorMessage(`Microphone access needed to start call: ${micError}`);
                     setIsLoading(false);
                     setStatus("Permission Denied");
                     return; // Stop the function execution if permission is denied
@@ -225,11 +225,11 @@ export default function VapiIntegration() {
             const call = await vapiRef.current.start(callConfig);
             console.log("Vapi start successful, call object:", call);
             // State updates handled by 'call-start' event
-        } catch (error: any) {
+        } catch (error) {
             console.error("Failed to start Vapi call:", error);
             setIsLoading(false);
             setStatus("Idle");
-            setErrorMessage(`Failed to start call: ${error.message || JSON.stringify(error)}`);
+            setErrorMessage(`Failed to start call: ${JSON.stringify(error)}`);
         }
     };
 
