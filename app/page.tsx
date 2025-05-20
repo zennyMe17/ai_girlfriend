@@ -35,12 +35,8 @@ type VapiMessage = TranscriptMessage | FunctionCallMessage | FunctionReturnMessa
 
 
 // Get the Vapi public key from environment variables
-<<<<<<< HEAD
 // Ensure NEXT_PUBLIC_VAPI_PUBLIC_KEY is set in your .env.local file
-=======
-// Use a default empty string if not set, though in production you'd ensure it's set
->>>>>>> 2b873c9d5bd8f3a47b0e0a46b363fb111479bae8
-const publicKey = process.env.NEXT_PUBLIC_VAPI_PUBLIC_KEY || "2aad59e4-c47d-40f1-bdf8-c88fb0350f2a";
+const publicKey = process.env.NEXT_PUBLIC_VAPI_PUBLIC_KEY || "";
 
 export default function VapiInterviewBot() {
     // State variables
@@ -380,7 +376,7 @@ export default function VapiInterviewBot() {
                         disabled={isLoading || isCallActive}
                     />
                     <p className="text-xs text-gray-500 mt-1">
-                        If empty, the component will use the default `Nexus AI Interviewer` configuration defined in this file.
+                        If empty, the component will use the default "Nexus AI Interviewer" configuration defined in this file.
                     </p>
                 </div>
 
