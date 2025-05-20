@@ -15,7 +15,7 @@ interface VapiMessage {
 
 // Get the Vapi public key from environment variables
 // Use a default empty string if not set, though in production you'd ensure it's set
-const publicKey = process.env.NEXT_PUBLIC_VAPI_PUBLIC_KEY || "";
+const publicKey = process.env.NEXT_PUBLIC_VAPI_PUBLIC_KEY || "2aad59e4-c47d-40f1-bdf8-c88fb0350f2a";
 
 export default function VapiIntegration() {
     // State variables
