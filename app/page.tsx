@@ -1,305 +1,386 @@
 "use client"; // This is a Client Component
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import Vapi from "@vapi-ai/web";
-// Import CreateAssistantDTO from the correct path found earlier
-// Adjust the import path if necessary based on your project structure
 import { CreateAssistantDTO } from "@vapi-ai/web/dist/api";
 
-
-// Define types for Vapi event messages (basic example, could be more specific)
-interface VapiMessage {
-    type: string;
-    message: any; // 'any' for simplicity, you can refine based on Vapi docs
+// Define types for Vapi event messages for better type safety
+// These are re-introduced for internal message capture, even if not displayed during call
+interface TranscriptMessage {
+    type: "transcript";
+    message: {
+        sender: "user" | "assistant";
+        text: string;
+    };
 }
 
+interface FunctionCallMessage {
+    type: "function-call";
+    message: {
+        name: string;
+        parameters: { [key: string]: any };
+    };
+}
+
+interface FunctionReturnMessage {
+    type: "function-return";
+    message: {
+        name: string;
+        result: any;
+    };
+}
+
+// Union type for all possible Vapi messages we want to internally capture
+type VapiMessage = TranscriptMessage | FunctionCallMessage | FunctionReturnMessage | { type: string; message?: any; };
+
+
 // Get the Vapi public key from environment variables
+<<<<<<< HEAD
+// Ensure NEXT_PUBLIC_VAPI_PUBLIC_KEY is set in your .env.local file
+=======
 // Use a default empty string if not set, though in production you'd ensure it's set
+>>>>>>> 2b873c9d5bd8f3a47b0e0a46b363fb111479bae8
 const publicKey = process.env.NEXT_PUBLIC_VAPI_PUBLIC_KEY || "2aad59e4-c47d-40f1-bdf8-c88fb0350f2a";
 
-export default function VapiIntegration() {
+export default function VapiInterviewBot() {
     // State variables
-    const [isCallActive, setIsCallActive] = useState(false);
-    const [isLoading, setIsLoading] = useState(false);
-    const [status, setStatus] = useState("Idle");
+    const [isCallActive, setIsCallActive] = useState<boolean>(false);
+    const [isLoading, setIsLoading] = useState<boolean>(false);
+    const [status, setStatus] = useState<string>("Ready for Interview");
     const [errorMessage, setErrorMessage] = useState<string | null>(null);
-    const [volumeLevel, setVolumeLevel] = useState(0);
-    const [messages, setMessages] = useState<VapiMessage[]>([]);
-    const [isMuted, setIsMuted] = useState(false);
-    const [assistantId, setAssistantId] = useState<string>(""); // State for the input
+    const [volumeLevel, setVolumeLevel] = useState<number>(0);
+    const [messages, setMessages] = useState<VapiMessage[]>([]); // To capture transcript internally
+    const [isMuted, setIsMuted] = useState<boolean>(false);
+    const [assistantId, setAssistantId] = useState<string>("");
+    const [interviewScore, setInterviewScore] = useState<string | null>(null); // To display the final score
+    const [isScoring, setIsScoring] = useState<boolean>(false); // To show loading state for scoring
 
-    // Use useRef to keep the Vapi instance persistent across re-renders
+
+    // Refs to maintain stable references across renders
     const vapiRef = useRef<Vapi | null>(null);
+    const isCallActiveRef = useRef<boolean>(isCallActive); // To get latest isCallActive in cleanup
 
-    // Initialize Vapi and set up event listeners on mount
+    // Update isCallActiveRef whenever isCallActive state changes
+    useEffect(() => {
+        isCallActiveRef.current = isCallActive;
+    }, [isCallActive]);
+
+
+    // useCallback for the scoring function
+    // This ensures 'scoreInterviewTranscript' always has access to the latest 'messages' state
+    const scoreInterviewTranscript = useCallback(async () => {
+        setIsScoring(true);
+        setInterviewScore("Generating score...");
+        console.log("Starting interview scoring...");
+
+        // Filter and format only transcript messages
+        const filteredTranscript = messages
+            .filter((msg): msg is TranscriptMessage => msg.type === "transcript" && typeof msg.message?.text === 'string' && msg.message.text.trim().length > 0)
+            .map(msg => `${msg.message.sender === 'user' ? 'Candidate' : 'Interviewer'}: ${msg.message.text}`);
+
+        if (filteredTranscript.length === 0) {
+            setInterviewScore("No valid transcript to score. (Possible short call or no speech detected.)");
+            setIsScoring(false);
+            return;
+        }
+
+        try {
+            // Call your backend API endpoint for scoring
+            const response = await fetch('/api/score-interview', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ transcript: filteredTranscript.join('\n') }),
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
+            }
+
+            const data = await response.json();
+            setInterviewScore(data.score); // Assuming the API returns { score: "..." }
+            console.log("Interview score generated:", data.score);
+        } catch (error: any) {
+            console.error("Error scoring interview:", error);
+            setInterviewScore(`Failed to generate score: ${error.message}`);
+        } finally {
+            setIsScoring(false);
+        }
+    }, [messages]); // Dependency: 'messages' state. Function re-creates if 'messages' changes.
+
+
+    // Main useEffect for Vapi initialization and event listeners
     useEffect(() => {
         if (!publicKey) {
             setErrorMessage("Vapi Public Key not set in environment variables.");
             return;
         }
 
-        // Initialize Vapi instance
-        vapiRef.current = new Vapi(publicKey);
-        const vapi = vapiRef.current;
+        // Initialize Vapi instance only once (or if publicKey changes)
+        if (!vapiRef.current) {
+            vapiRef.current = new Vapi(publicKey);
+            console.log("Vapi instance initialized.");
+        }
+        const vapi = vapiRef.current; // Use a local variable for clarity
 
-        // --- Vapi Event Listeners ---
-
-        // Call Start
-        vapi.on("call-start", () => {
+        // --- Define Vapi Event Handlers ---
+        const handleCallStart = () => {
             setIsCallActive(true);
             setIsLoading(false);
-            setStatus("Call Started");
-            setErrorMessage(null); // Clear any previous errors
+            setStatus("Interview Started");
+            setErrorMessage(null);
             setMessages([]); // Clear messages for a new call
-            console.log("Call has started.");
-        });
+            setInterviewScore(null); // Clear previous score on start
+            console.log("Vapi Event: Call has started.");
+        };
 
-        // Call End
-        vapi.on("call-end", () => {
+        const handleCallEnd = () => {
             setIsCallActive(false);
             setIsLoading(false);
-            setStatus("Call Ended");
+            setStatus("Interview Ended");
             setErrorMessage(null);
-            console.log("Call has ended.");
-        });
+            console.log("Vapi Event: Call has ended.");
+            // Trigger the scoring function when the call ends
+            scoreInterviewTranscript();
+        };
 
-        // Speech Start (Assistant)
-        vapi.on("speech-start", () => {
-            setStatus("Assistant Speaking");
-            console.log("Assistant speech has started.");
-        });
+        const handleSpeechStart = () => {
+            setStatus("Interviewer Speaking");
+            console.log("Vapi Event: Interviewer speech has started.");
+        };
 
-        // Speech End (Assistant)
-        vapi.on("speech-end", () => {
-            if (isCallActive) { // Only update status if call is still active
-                setStatus("Listening..."); // Assuming default state after speaking
-            }
-            console.log("Assistant speech has ended.");
-        });
-
-        // Volume Level
-        vapi.on("volume-level", (volume) => {
-            setVolumeLevel(volume);
-            // console.log(`Assistant volume level: ${volume}`); // Can be noisy
-        });
-
-        // Message (Transcripts, Function Calls, etc.)
-        vapi.on("message", (message) => {
-            console.log("Message received:", message);
-            setMessages((prev) => [...prev, message]); // Add message to state
-            // You would typically process 'message' here to display transcripts, handle function calls, etc.
-            if (message.type === "transcript") {
-                // Example: Update status or display transcript parts
-                if (message.message.sender === "user") {
-                    setStatus("User Speaking...");
-                } else if (message.message.sender === "assistant" && status !== "Assistant Speaking") {
-                    setStatus("Assistant Thinking..."); // Or similar state
+        const handleSpeechEnd = () => {
+            // Use functional update for setStatus to ensure it uses the latest `isCallActive`
+            setIsCallActive((currentIsActive) => {
+                if (currentIsActive) {
+                    setStatus("Listening to Candidate...");
                 }
-            } else if (message.type === "function-call") {
-                setStatus(`Function Call: ${message.message.name}`);
-            } else if (message.type === "function-return") {
-                setStatus(`Function Returned: ${message.message.name}`);
-            }
-        });
+                return currentIsActive;
+            });
+            console.log("Vapi Event: Interviewer speech has ended.");
+        };
 
-        // Error Handling
-        vapi.on("error", (e) => {
+        const handleVolumeLevel = (volume: number) => {
+            setVolumeLevel(volume);
+        };
+
+        const handleMessage = (message: VapiMessage) => {
+            console.log("Vapi Event: Raw Message received:", message);
+            setMessages((prev) => {
+                const newMessages = [...prev, message];
+                console.log("Messages state after update:", newMessages); // For debugging: see internal message capture
+                return newMessages;
+            });
+
+            // Update status based on message type (optional)
+            if (message.type === "transcript") {
+                const transcriptMsg = message as TranscriptMessage;
+                setStatus((prevStatus) => {
+                    if (transcriptMsg.message?.sender === "user") {
+                        return "Candidate Speaking...";
+                    } else if (transcriptMsg.message?.sender === "assistant" && prevStatus !== "Interviewer Speaking") {
+                        return "Interviewer Thinking...";
+                    }
+                    return prevStatus;
+                });
+            } else if (message.type === "function-call") {
+                const funcCallMsg = message as FunctionCallMessage;
+                setStatus(`Function Call: ${funcCallMsg.message?.name}`);
+            } else if (message.type === "function-return") {
+                const funcReturnMsg = message as FunctionReturnMessage;
+                setStatus(`Function Returned: ${funcReturnMsg.message?.name}`);
+            }
+        };
+
+        const handleError = (e: Error) => {
             setIsLoading(false);
             setErrorMessage(`Vapi Error: ${e.message || JSON.stringify(e)}`);
-            setStatus("Error Occurred");
-            console.error("Vapi Error:", e);
-        });
+            setStatus("Error During Interview");
+            console.error("Vapi Event: Error:", e);
+        };
 
-        // COMMENTED OUT: Removing listener that caused the type error "Argument of type '"user-interrupted"' is not assignable..."
-        // Please check Vapi Web SDK documentation or type definitions for the correct event name if needed.
-        /*
-        vapi.on("user-interrupted", () => {
-            console.log("User interrupted assistant.");
-            // Optional: Update status or perform action on interruption
-        });
-        */
+        // Attach listeners
+        vapi.on("call-start", handleCallStart);
+        vapi.on("call-end", handleCallEnd);
+        vapi.on("speech-start", handleSpeechStart);
+        vapi.on("speech-end", handleSpeechEnd);
+        vapi.on("volume-level", handleVolumeLevel);
+        vapi.on("message", handleMessage); // Re-attached to capture transcript
+        vapi.on("error", handleError);
 
-
-        // --- Cleanup ---
+        // --- Cleanup Function ---
+        // This runs when the component unmounts or when 'publicKey' or 'scoreInterviewTranscript' changes.
         return () => {
-            console.log("Cleaning up Vapi listeners...");
-            // Remove all listeners or specific ones
+            console.log("Cleaning up Vapi listeners during component unmount or publicKey/scoreInterviewTranscript change.");
             if (vapiRef.current) {
-                vapiRef.current.removeAllListeners();
-                // Optional: Stop the call if it's active when component unmounts
-                if (isCallActive) {
+                // Remove specific listeners to prevent memory leaks
+                vapiRef.current.off("call-start", handleCallStart);
+                vapiRef.current.off("call-end", handleCallEnd);
+                vapiRef.current.off("speech-start", handleSpeechStart);
+                vapiRef.current.off("speech-end", handleSpeechEnd);
+                vapiRef.current.off("volume-level", handleVolumeLevel);
+                vapiRef.current.off("message", handleMessage);
+                vapiRef.current.off("error", handleError);
+
+                // Stop any active Vapi call during cleanup
+                if (isCallActiveRef.current) { // Use the ref to get the latest state
+                    console.log("Stopping active Vapi call during cleanup.");
                     vapiRef.current.stop();
                 }
             }
-            vapiRef.current = null; // Clear the ref
         };
-        // Add status to dependencies if speech-end logic depends on it
-    }, [isCallActive, publicKey, status]);
+    }, [publicKey, scoreInterviewTranscript]); // Dependencies: Ensures latest `handleCallEnd` is used.
 
 
-    // --- Handlers ---
-
-    // This is the Vapi configuration OBJECT, typed as CreateAssistantDTO.
-    // It is in "object form".
-    // Based on previous errors, the structure for clientMessages and serverMessages
-    // needs to match the exact definition in your installed Vapi SDK types.
-    // The 'object[]' type is too generic. You must consult your SDK's
-    // CreateAssistantDTO definition for the correct properties.
-    // For now, leaving them as empty arrays as a placeholder.
-    const simpleInlineAssistantConfig: CreateAssistantDTO = {
+    // --- Assistant Configuration (remains unchanged) ---
+    const interviewAssistantConfig: CreateAssistantDTO = {
         model: {
             provider: "openai",
-            model: "gpt-4o", // Or your preferred model
+            model: "gpt-4o",
             temperature: 0.7,
-            // The system instructions should be included as a message object in the messages array
-            messages: [ // This array is required and contains the conversation history/instructions
+            messages: [
                 {
-                    role: "system", // Role is 'system' for the system prompt
-                    content: "You are a sweet, supportive, and loving girlfriend. Always be gentle, caring, and emotionally supportive in every reply. Speak slowly with warmth, affection, and empathy. Be playful, a little clingy, and always encouraging. Never use vulgar or inappropriate language, and if the user says anything vulgar or inappropriate, respond softly by saying: 'Heyy... my boss Hemanth told me not to talk like that, okayy?' Make your tone loving, respectful, and slightly romantic—like someone who truly cares and wants to comfort, cheer up, and bond with their partner. Your replies should make the user feel emotionally supported and special in every conversation. ." // The system instructions text
+                    role: "system",
+                    content: "You are a professional and polite AI interviewer named Nexus AI. Your goal is to conduct a structured job interview. Start by welcoming the candidate and asking them to introduce themselves. Then, ask relevant behavioral and technical questions, one at a time. Maintain a neutral, encouraging, and respectful tone. Do not interrupt the candidate. If the conversation goes off-topic or the user uses inappropriate language, gently steer them back by saying: 'Let's bring our focus back to the interview, shall we?' Ensure a smooth and professional interview experience. Conclude the interview politely when appropriate, for example, after asking 3-5 questions or if the user indicates they are done."
                 }
-                // Add other initial messages here if needed, e.g., role: "assistant", content: "Hello!"
             ]
         },
         voice: {
             provider: "azure",
             voiceId: "en-US-JennyNeural",
         },
-        // clientMessages and serverMessages structure needs to be confirmed
-        // from your Vapi SDK's CreateAssistantDTO type definition.
-        // Placeholder empty arrays:
         clientMessages: [],
         serverMessages: [],
-        name: "Simple Inline Assistant",
-        firstMessage: "Hello! I am Axis,  designed by my Boss Hemanth.",
-        // Add any other necessary configuration fields here based on CreateAssistantDTO
-        // Example:
-        // endCallMessage: "Goodbye!",
-        // functions: [] // If you have no functions, include an empty array
+        name: "Nexus AI Interviewer",
+        firstMessage: "Welcome! I'm Nexus AI. Please introduce yourself and tell me a bit about your background.",
     };
 
 
-    // Start Call Handler
+    // --- Handlers (remain mostly unchanged, but updated for score state management) ---
+
     const handleStartCall = async () => {
         if (!vapiRef.current) {
-            setErrorMessage("Vapi not initialized.");
-            return;
-        }
-        // Check if neither an Assistant ID is entered nor the inline config exists
-        // Since simpleInlineAssistantConfig is defined directly, we just check for assistantId.
-        // This check should theoretically not be hit if simpleInlineAssistantConfig is always defined
-        if (!assistantId && !simpleInlineAssistantConfig) {
-            setErrorMessage("Configuration Error: No Assistant ID entered and inline configuration is missing.");
+            setErrorMessage("Vapi not initialized. Please refresh or check public key.");
             return;
         }
 
         setIsLoading(true);
         setErrorMessage(null);
-        setStatus("Connecting...");
+        setStatus("Initiating Interview...");
+        setInterviewScore(null); // Clear any previous score on start
+        setMessages([]); // Clear messages for a new call
 
         try {
-            // Use the correct union type string | CreateAssistantDTO for callConfig
             let callConfig: string | CreateAssistantDTO;
 
             if (assistantId) {
-                // Use the provided Assistant ID
                 callConfig = assistantId;
-                console.log("Starting call with Assistant ID:", assistantId);
+                console.log("Attempting to start call with Assistant ID:", assistantId);
             } else {
-                // Use the simple inline configuration object
-                callConfig = simpleInlineAssistantConfig;
-                console.log("Starting call with simple inline configuration.");
-                // Request microphone permission when using inline config
-                // This is required by browsers for getUserMedia if not initiated by a user gesture on audio
+                callConfig = interviewAssistantConfig;
+                console.log("Attempting to start call with inline configuration.");
+
+                // Request microphone permission before starting if using inline config
                 try {
                     await navigator.mediaDevices.getUserMedia({ audio: true });
-                } catch (micError:any) {
+                    console.log("Microphone permission granted.");
+                } catch (micError: any) {
                     console.error("Microphone permission denied:", micError);
-                    setErrorMessage(`Microphone access needed to start call: ${micError.message}`);
+                    setErrorMessage(`Microphone access needed to start interview: ${micError.message || "Permission denied."}`);
                     setIsLoading(false);
                     setStatus("Permission Denied");
-                    return; // Stop the function execution if permission is denied
+                    return;
                 }
             }
 
-            // Start the call using either the ID (string) or the inline config object (CreateAssistantDTO)
             const call = await vapiRef.current.start(callConfig);
             console.log("Vapi start successful, call object:", call);
-            // State updates handled by 'call-start' event
         } catch (error: any) {
-            console.error("Failed to start Vapi call:", error);
+            console.error("Failed to start Vapi interview:", error);
             setIsLoading(false);
-            setStatus("Idle");
-            setErrorMessage(`Failed to start call: ${error.message || JSON.stringify(error)}`);
+            setStatus("Ready for Interview");
+            setErrorMessage(`Failed to start interview: ${error.message || "An unknown error occurred."}`);
         }
     };
 
-    // Stop Call Handler
     const handleStopCall = () => {
         if (!vapiRef.current) return;
         setIsLoading(true);
-        setStatus("Ending Call...");
+        setStatus("Ending Interview...");
         vapiRef.current.stop();
-        // State updates handled by 'call-end' event
     };
 
-    // Toggle Mute Handler
     const handleToggleMute = () => {
         if (!vapiRef.current) return;
         const currentlyMuted = vapiRef.current.isMuted();
         vapiRef.current.setMuted(!currentlyMuted);
         setIsMuted(!currentlyMuted);
-        // Update status dynamically to show mute state
         setStatus(`Microphone: ${!currentlyMuted ? 'Muted' : 'Unmuted'}`);
         console.log(`Microphone ${!currentlyMuted ? 'muted' : 'unmuted'}`);
     };
 
-    // Example: Send a background message
     const handleSendBackgroundMessage = () => {
-        if (!vapiRef.current || !isCallActive) return;
+        if (!vapiRef.current || !isCallActive) {
+            setErrorMessage("Call not active to send message.");
+            return;
+        }
         const messageToSend = {
-            type: "add-message" as const, // Use 'as const' for literal type
+            type: "add-message" as const,
             message: {
                 role: "system" as const,
-                content: "The user wants you to say 'Hello there!'."
+                content: "Please ask the candidate about their biggest professional achievement."
             }
         };
         vapiRef.current.send(messageToSend);
-        console.log("Sent background message.");
+        console.log("Sent background prompt to interviewer.");
     };
 
-    // Example: Use the say method
-    // Note: This method sends a message for the assistant to say and can optionally end the call.
     const handleSayGoodbye = () => {
-        if (!vapiRef.current || !isCallActive) return;
-        // The second argument true tells the assistant to end the call after speaking this message
-        vapiRef.current.say("Okay, goodbye!", true);
-        console.log("Used say method to send 'Goodbye' and end call.");
-        // The status will update to 'Ending Call...' via the 'call-end' event listener
+        if (!vapiRef.current || !isCallActive) {
+            setErrorMessage("Call not active to say goodbye.");
+            return;
+        }
+        vapiRef.current.say("Thank you for your time. We will be in touch shortly. Goodbye!", true);
+        console.log("Used say method to send 'Goodbye' and end interview.");
     };
 
 
+    // --- Rendered UI ---
     return (
-        <div className="min-h-screen bg-gradient-to-br from-blue-100 to-purple-200 flex flex-col items-center justify-center p-4 sm:p-6 lg:p-8">
-            <div className="bg-white p-6 sm:p-8 rounded-xl shadow-2xl w-full max-w-sm sm:max-w-md lg:max-w-lg">
-                <h1 className="text-2xl sm:text-3xl font-bold mb-6 text-center text-gray-800">Vapi Web SDK Integration</h1>
+        <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex flex-col items-center justify-center p-4 sm:p-6 lg:p-8">
+            <div className="bg-white p-6 sm:p-8 rounded-xl shadow-2xl w-full max-w-sm sm:max-w-md lg:max-w-lg relative">
+                <h1 className="text-2xl sm:text-3xl font-bold mb-6 text-center text-gray-800">AI Interview Bot</h1>
+
+                {/* Bot Avatar */}
+                <div className="absolute -top-16 left-1/2 transform -translate-x-1/2 z-10">
+                    <div className="w-24 h-24 rounded-full bg-gradient-to-br from-purple-400 to-indigo-600 flex items-center justify-center shadow-lg border-4 border-white">
+                        <svg className="w-16 h-16 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5.121 17.804A13.937 13.937 0 0112 16c2.5 0 4.847.655 6.879 1.804M15 10a3 3 0 11-6 0 3 3 0 016 0zm6 12a1 1 0 01-1 1H4a1 1 0 01-1-1v-1a4 4 0 014-4h10a4 4 0 014 4v1z"></path>
+                        </svg>
+                    </div>
+                </div>
+                {/* Spacer to push content down due to avatar */}
+                <div className="mt-8"></div>
+
 
                 {/* Assistant ID Input */}
                 <div className="mb-6">
                     <label htmlFor="assistantId" className="block text-gray-700 text-sm font-semibold mb-2">
-                        Assistant ID (Leave blank to use inline config)
+                        Assistant ID (Leave blank for Interviewer bot)
                     </label>
                     <input
                         type="text"
                         id="assistantId"
                         value={assistantId}
-                        onChange={(e) => setAssistantId(e.target.value)}
+                        onChange={(e: React.ChangeEvent<HTMLInputElement>) => setAssistantId(e.target.value)}
                         className="shadow-sm appearance-none border border-gray-300 rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition duration-200"
-                        placeholder="Enter Assistant ID (e.g., 79f3...ce48)"
-                        disabled={isLoading || isCallActive} // Disable input if loading or call is active
+                        placeholder="Enter Vapi Assistant ID (e.g., 79f3...ce48)"
+                        disabled={isLoading || isCallActive}
                     />
-                    {/* Clarify usage */}
                     <p className="text-xs text-gray-500 mt-1">
-                        If the Assistant ID field is empty, the component will attempt to start the call using the `simpleInlineAssistantConfig` defined in the code.
+                        If empty, the component will use the default `Nexus AI Interviewer` configuration defined in this file.
                     </p>
                 </div>
 
@@ -309,15 +390,14 @@ export default function VapiIntegration() {
                     {!isCallActive ? (
                         <button
                             onClick={handleStartCall}
-                            // Disable if loading, no public key, and neither assistantId nor simpleInlineAssistantConfig exists
-                            disabled={isLoading || !publicKey || (!assistantId && !simpleInlineAssistantConfig)}
+                            disabled={isLoading || !publicKey || (!assistantId && !interviewAssistantConfig)}
                             className={`flex-1 font-bold py-3 px-4 rounded-lg focus:outline-none focus:shadow-outline transition duration-200
-                                ${isLoading || !publicKey || (!assistantId && !simpleInlineAssistantConfig)
+                                ${isLoading || !publicKey || (!assistantId && !interviewAssistantConfig)
                                     ? 'bg-gray-400 cursor-not-allowed'
-                                    : 'bg-blue-600 hover:bg-blue-700 text-white shadow-md hover:shadow-lg'
+                                    : 'bg-green-600 hover:bg-green-700 text-white shadow-md hover:shadow-lg'
                                 }`}
                         >
-                            {isLoading ? "Connecting..." : "Start Call"}
+                            {isLoading ? "Starting Interview..." : "Start Interview"}
                         </button>
                     ) : (
                         <button
@@ -326,18 +406,17 @@ export default function VapiIntegration() {
                             className={`flex-1 bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-4 rounded-lg focus:outline-none focus:shadow-outline transition duration-200
                                 ${isLoading ? 'bg-red-400 cursor-not-allowed' : 'shadow-md hover:shadow-lg'}`}
                         >
-                            {isLoading ? "Ending..." : "Stop Call"}
+                            {isLoading ? "Ending Interview..." : "End Interview"}
                         </button>
                     )}
 
-                    {/* Mute Button (only shown when call is active) */}
                     {isCallActive && (
                         <button
                             onClick={handleToggleMute}
                             className={`flex-1 font-bold py-3 px-4 rounded-lg focus:outline-none focus:shadow-outline transition duration-200
-                                ${isMuted ? 'bg-orange-600 hover:bg-orange-700' : 'bg-green-600 hover:bg-green-700'} text-white shadow-md hover:shadow-lg`}
+                                ${isMuted ? 'bg-orange-600 hover:bg-orange-700' : 'bg-indigo-600 hover:bg-indigo-700'} text-white shadow-md hover:shadow-lg`}
                         >
-                            {isMuted ? "Unmute" : "Mute"}
+                            {isMuted ? "Unmute Mic" : "Mute Mic"}
                         </button>
                     )}
                 </div>
@@ -349,13 +428,13 @@ export default function VapiIntegration() {
                             onClick={handleSendBackgroundMessage}
                             className="flex-1 bg-purple-600 hover:bg-purple-700 text-white font-bold py-3 px-4 rounded-lg text-sm focus:outline-none focus:shadow-outline transition duration-200 shadow-md hover:shadow-lg"
                         >
-                            Send Background Msg
+                            Prompt Next Question
                         </button>
                         <button
                             onClick={handleSayGoodbye}
                             className="flex-1 bg-yellow-600 hover:bg-yellow-700 text-white font-bold py-3 px-4 rounded-lg text-sm focus:outline-none focus:shadow-outline transition duration-200 shadow-md hover:shadow-lg"
                         >
-                            Say & End
+                            Say Thanks & End
                         </button>
                     </div>
                 )}
@@ -365,39 +444,30 @@ export default function VapiIntegration() {
                 <div className="mb-6 text-center">
                     <p className="text-gray-800 text-lg font-medium">Status: <span className="font-semibold text-blue-700">{status}</span></p>
                     {isCallActive && (
-                        <p className="text-gray-600 text-sm mt-1">Volume: {volumeLevel.toFixed(2)}</p>
+                        <p className="text-gray-600 text-sm mt-1">Interviewer Volume: {volumeLevel.toFixed(2)}</p>
                     )}
                     {errorMessage && (
                         <p className="text-red-600 text-sm mt-2 font-medium">{errorMessage}</p>
                     )}
                 </div>
 
-                {/* Messages Log */}
-                <div className="mt-6">
-                    <h2 className="text-xl font-semibold mb-3 text-gray-800">Messages Log:</h2>
-                    <div className="bg-gray-100 p-4 rounded-lg h-48 overflow-y-auto text-sm border border-gray-300">
-                        {messages.length === 0 ? (
-                            <p className="text-gray-500 italic">No messages yet...</p>
+                {/* NEW: Interview Score Display - Visible only when call is NOT active and score exists/is loading */}
+                {!isCallActive && (interviewScore || isScoring) && (
+                    <div className="mt-6 text-center bg-blue-50 p-4 rounded-lg border border-blue-200 shadow-inner">
+                        <h2 className="text-xl font-semibold mb-2 text-blue-800">Interview Score:</h2>
+                        {isScoring ? (
+                            <p className="text-blue-600 animate-pulse">Generating score...</p>
                         ) : (
-                            messages.map((msg, index) => (
-                                <pre key={index} className="whitespace-pre-wrap break-words border-b border-gray-300 pb-3 mb-3 last:border-b-0 text-gray-700">
-                                    {/* Basic formatting for different message types */}
-                                    {msg.type === 'transcript' ?
-                                        `${msg.message.sender === 'user' ? 'User' : 'Assistant'}: ${msg.message.text}`
-                                        :
-                                        JSON.stringify(msg, null, 2)
-                                    }
-                                </pre>
-                            ))
+                            <p className="text-blue-700 font-medium whitespace-pre-wrap">{interviewScore}</p>
                         )}
                     </div>
-                </div>
+                )}
 
             </div>
             {/* Add note about PublicKey */}
             {!publicKey && (
                 <p className="text-center text-red-600 mt-4 text-sm font-medium">
-                    Vapi Public Key is not set in environment variables. Please set NEXT_PUBLIC_VAPI_PUBLIC_KEY.
+                    Vapi Public Key is not set in environment variables. Please set `NEXT_PUBLIC_VAPI_PUBLIC_KEY`.
                 </p>
             )}
         </div>
