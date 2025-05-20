@@ -1,93 +1,48 @@
-"use client"; // This is a Client Component
+
+"use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import Vapi from "@vapi-ai/web";
 import { CreateAssistantDTO } from "@vapi-ai/web/dist/api";
 
-// Define types for Vapi event messages for better type safety
-// These are re-introduced for internal message capture, even if not displayed during call
-interface TranscriptMessage {
-    type: "transcript";
-    message: {
-        sender: "user" | "assistant";
-        text: string;
-    };
-}
-
-interface FunctionCallMessage {
-    type: "function-call";
-    message: {
-        name: string;
-        parameters: { [key: string]: any };
-    };
-}
-
-interface FunctionReturnMessage {
-    type: "function-return";
-    message: {
-        name: string;
-        result: any;
-    };
-}
-
-// Union type for all possible Vapi messages we want to internally capture
-type VapiMessage = TranscriptMessage | FunctionCallMessage | FunctionReturnMessage | { type: string; message?: any; };
-
-
-// Get the Vapi public key from environment variables
-// Ensure NEXT_PUBLIC_VAPI_PUBLIC_KEY is set in your .env.local file
 const publicKey = process.env.NEXT_PUBLIC_VAPI_PUBLIC_KEY || "";
 
 export default function VapiInterviewBot() {
-    // State variables
     const [isCallActive, setIsCallActive] = useState<boolean>(false);
     const [isLoading, setIsLoading] = useState<boolean>(false);
     const [status, setStatus] = useState<string>("Ready for Interview");
     const [errorMessage, setErrorMessage] = useState<string | null>(null);
     const [volumeLevel, setVolumeLevel] = useState<number>(0);
-    const [messages, setMessages] = useState<VapiMessage[]>([]); // To capture transcript internally
     const [isMuted, setIsMuted] = useState<boolean>(false);
     const [assistantId, setAssistantId] = useState<string>("");
-    const [interviewScore, setInterviewScore] = useState<string | null>(null); // To display the final score
-    const [isScoring, setIsScoring] = useState<boolean>(false); // To show loading state for scoring
 
+    const [interviewScore, setInterviewScore] = useState<string | null>(null);
+    const [isScoring, setIsScoring] = useState<boolean>(false);
 
-    // Refs to maintain stable references across renders
     const vapiRef = useRef<Vapi | null>(null);
-    const isCallActiveRef = useRef<boolean>(isCallActive); // To get latest isCallActive in cleanup
+    const isCallActiveRef = useRef<boolean>(isCallActive);
 
-    // Update isCallActiveRef whenever isCallActive state changes
+    // This ref will hold the latest call ID directly
+    const currentCallIdRef = useRef<string | null>(null);
+
+    // Effect to keep the ref updated with the latest isCallActive state
     useEffect(() => {
         isCallActiveRef.current = isCallActive;
     }, [isCallActive]);
 
 
-    // useCallback for the scoring function
-    // This ensures 'scoreInterviewTranscript' always has access to the latest 'messages' state
-    const scoreInterviewTranscript = useCallback(async () => {
+    const scoreInterviewTranscript = useCallback(async (callId: string) => {
         setIsScoring(true);
         setInterviewScore("Generating score...");
-        console.log("Starting interview scoring...");
-
-        // Filter and format only transcript messages
-        const filteredTranscript = messages
-            .filter((msg): msg is TranscriptMessage => msg.type === "transcript" && typeof msg.message?.text === 'string' && msg.message.text.trim().length > 0)
-            .map(msg => `${msg.message.sender === 'user' ? 'Candidate' : 'Interviewer'}: ${msg.message.text}`);
-
-        if (filteredTranscript.length === 0) {
-            setInterviewScore("No valid transcript to score. (Possible short call or no speech detected.)");
-            setIsScoring(false);
-            return;
-        }
+        console.log(`Starting interview scoring for Call ID: ${callId}`);
 
         try {
-            // Call your backend API endpoint for scoring
             const response = await fetch('/api/score-interview', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify({ transcript: filteredTranscript.join('\n') }),
+                body: JSON.stringify({ callId: callId }),
             });
 
             if (!response.ok) {
@@ -96,15 +51,37 @@ export default function VapiInterviewBot() {
             }
 
             const data = await response.json();
-            setInterviewScore(data.score); // Assuming the API returns { score: "..." }
-            console.log("Interview score generated:", data.score);
+            setInterviewScore(data.score);
+            console.log(`Interview score generated for ${callId}:`, data.score);
         } catch (error: any) {
-            console.error("Error scoring interview:", error);
+            console.error(`Error scoring interview for Call ID ${callId}:`, error);
             setInterviewScore(`Failed to generate score: ${error.message}`);
         } finally {
             setIsScoring(false);
         }
-    }, [messages]); // Dependency: 'messages' state. Function re-creates if 'messages' changes.
+    }, []);
+
+
+    const handleCallEnd = useCallback(() => {
+        setIsCallActive(false);
+        setIsLoading(false);
+        setStatus("Interview Ended");
+        setErrorMessage(null);
+        console.log("Vapi Event: Call has ended.");
+
+        // IMPORTANT DEBUG: Check the value of the ref right before scoring
+        console.log("DEBUG: currentCallIdRef.current at call-end:", currentCallIdRef.current);
+
+        if (currentCallIdRef.current) {
+            scoreInterviewTranscript(currentCallIdRef.current);
+            // Optionally, clear the ref after use if you want to explicitly reset it for the next call
+            currentCallIdRef.current = null;
+        } else {
+            setInterviewScore("No call ID available to score. (Ref was null at call end)");
+            setIsScoring(false);
+            console.error("Error: currentCallIdRef.current was null when handleCallEnd fired.");
+        }
+    }, [scoreInterviewTranscript]);
 
 
     // Main useEffect for Vapi initialization and event listeners
@@ -114,32 +91,20 @@ export default function VapiInterviewBot() {
             return;
         }
 
-        // Initialize Vapi instance only once (or if publicKey changes)
         if (!vapiRef.current) {
             vapiRef.current = new Vapi(publicKey);
             console.log("Vapi instance initialized.");
         }
-        const vapi = vapiRef.current; // Use a local variable for clarity
+        const vapi = vapiRef.current;
 
-        // --- Define Vapi Event Handlers ---
         const handleCallStart = () => {
             setIsCallActive(true);
             setIsLoading(false);
             setStatus("Interview Started");
             setErrorMessage(null);
-            setMessages([]); // Clear messages for a new call
+            currentCallIdRef.current = null; // Clear ref on start of a new call
             setInterviewScore(null); // Clear previous score on start
             console.log("Vapi Event: Call has started.");
-        };
-
-        const handleCallEnd = () => {
-            setIsCallActive(false);
-            setIsLoading(false);
-            setStatus("Interview Ended");
-            setErrorMessage(null);
-            console.log("Vapi Event: Call has ended.");
-            // Trigger the scoring function when the call ends
-            scoreInterviewTranscript();
         };
 
         const handleSpeechStart = () => {
@@ -148,7 +113,6 @@ export default function VapiInterviewBot() {
         };
 
         const handleSpeechEnd = () => {
-            // Use functional update for setStatus to ensure it uses the latest `isCallActive`
             setIsCallActive((currentIsActive) => {
                 if (currentIsActive) {
                     setStatus("Listening to Candidate...");
@@ -160,34 +124,6 @@ export default function VapiInterviewBot() {
 
         const handleVolumeLevel = (volume: number) => {
             setVolumeLevel(volume);
-        };
-
-        const handleMessage = (message: VapiMessage) => {
-            console.log("Vapi Event: Raw Message received:", message);
-            setMessages((prev) => {
-                const newMessages = [...prev, message];
-                console.log("Messages state after update:", newMessages); // For debugging: see internal message capture
-                return newMessages;
-            });
-
-            // Update status based on message type (optional)
-            if (message.type === "transcript") {
-                const transcriptMsg = message as TranscriptMessage;
-                setStatus((prevStatus) => {
-                    if (transcriptMsg.message?.sender === "user") {
-                        return "Candidate Speaking...";
-                    } else if (transcriptMsg.message?.sender === "assistant" && prevStatus !== "Interviewer Speaking") {
-                        return "Interviewer Thinking...";
-                    }
-                    return prevStatus;
-                });
-            } else if (message.type === "function-call") {
-                const funcCallMsg = message as FunctionCallMessage;
-                setStatus(`Function Call: ${funcCallMsg.message?.name}`);
-            } else if (message.type === "function-return") {
-                const funcReturnMsg = message as FunctionReturnMessage;
-                setStatus(`Function Returned: ${funcReturnMsg.message?.name}`);
-            }
         };
 
         const handleError = (e: Error) => {
@@ -203,34 +139,29 @@ export default function VapiInterviewBot() {
         vapi.on("speech-start", handleSpeechStart);
         vapi.on("speech-end", handleSpeechEnd);
         vapi.on("volume-level", handleVolumeLevel);
-        vapi.on("message", handleMessage); // Re-attached to capture transcript
         vapi.on("error", handleError);
 
         // --- Cleanup Function ---
-        // This runs when the component unmounts or when 'publicKey' or 'scoreInterviewTranscript' changes.
         return () => {
-            console.log("Cleaning up Vapi listeners during component unmount or publicKey/scoreInterviewTranscript change.");
+            console.log("Cleaning up Vapi listeners during component unmount or publicKey/handleCallEnd change.");
             if (vapiRef.current) {
-                // Remove specific listeners to prevent memory leaks
                 vapiRef.current.off("call-start", handleCallStart);
                 vapiRef.current.off("call-end", handleCallEnd);
                 vapiRef.current.off("speech-start", handleSpeechStart);
                 vapiRef.current.off("speech-end", handleSpeechEnd);
                 vapiRef.current.off("volume-level", handleVolumeLevel);
-                vapiRef.current.off("message", handleMessage);
                 vapiRef.current.off("error", handleError);
 
-                // Stop any active Vapi call during cleanup
-                if (isCallActiveRef.current) { // Use the ref to get the latest state
+                if (isCallActiveRef.current) {
                     console.log("Stopping active Vapi call during cleanup.");
                     vapiRef.current.stop();
                 }
             }
         };
-    }, [publicKey, scoreInterviewTranscript]); // Dependencies: Ensures latest `handleCallEnd` is used.
+    }, [publicKey, handleCallEnd]);
 
 
-    // --- Assistant Configuration (remains unchanged) ---
+    // --- Assistant Configuration (no changes) ---
     const interviewAssistantConfig: CreateAssistantDTO = {
         model: {
             provider: "openai",
@@ -239,7 +170,7 @@ export default function VapiInterviewBot() {
             messages: [
                 {
                     role: "system",
-                    content: "You are a professional and polite AI interviewer named Nexus AI. Your goal is to conduct a structured job interview. Start by welcoming the candidate and asking them to introduce themselves. Then, ask relevant behavioral and technical questions, one at a time. Maintain a neutral, encouraging, and respectful tone. Do not interrupt the candidate. If the conversation goes off-topic or the user uses inappropriate language, gently steer them back by saying: 'Let's bring our focus back to the interview, shall we?' Ensure a smooth and professional interview experience. Conclude the interview politely when appropriate, for example, after asking 3-5 questions or if the user indicates they are done."
+                    content: "You are a professional and polite AI interviewer named Nexus AI. Your goal is to conduct a structured job interview. Start by welcoming the candidate and asking them to introduce themselves. Then, ask relevant behavioral and technical questions, one at a time. Maintain a neutral, encouraging and respectful tone. Do not interrupt the candidate. If the conversation goes off-topic or the user uses inappropriate language, gently steer them back by saying: 'Let's bring our focus back to the interview, shall we?' Ensure a smooth and professional interview experience. Conclude the interview politely when appropriate, for example, after asking 3-5 questions or if the user indicates they are done."
                 }
             ]
         },
@@ -254,8 +185,7 @@ export default function VapiInterviewBot() {
     };
 
 
-    // --- Handlers (remain mostly unchanged, but updated for score state management) ---
-
+    // --- Handlers (handleStartCall updated) ---
     const handleStartCall = async () => {
         if (!vapiRef.current) {
             setErrorMessage("Vapi not initialized. Please refresh or check public key.");
@@ -265,8 +195,8 @@ export default function VapiInterviewBot() {
         setIsLoading(true);
         setErrorMessage(null);
         setStatus("Initiating Interview...");
-        setInterviewScore(null); // Clear any previous score on start
-        setMessages([]); // Clear messages for a new call
+        currentCallIdRef.current = null; // Ensure ref is cleared before new call
+        setInterviewScore(null);
 
         try {
             let callConfig: string | CreateAssistantDTO;
@@ -278,7 +208,6 @@ export default function VapiInterviewBot() {
                 callConfig = interviewAssistantConfig;
                 console.log("Attempting to start call with inline configuration.");
 
-                // Request microphone permission before starting if using inline config
                 try {
                     await navigator.mediaDevices.getUserMedia({ audio: true });
                     console.log("Microphone permission granted.");
@@ -292,7 +221,23 @@ export default function VapiInterviewBot() {
             }
 
             const call = await vapiRef.current.start(callConfig);
-            console.log("Vapi start successful, call object:", call);
+
+            if (call) {
+                // *** THIS IS THE NEW LOG YOU ASKED FOR ***
+                console.log(">>> RAW CALL.ID FROM VAPI.START():", call.id);
+
+                // Directly set the ref with the call ID
+                currentCallIdRef.current = call.id;
+                console.log("Vapi start successful, call object:", call);
+                console.log("Call ID captured DIRECTLY IN REF:", currentCallIdRef.current);
+                console.log("CONFIRM: currentCallIdRef.current immediately after setting:", currentCallIdRef.current);
+            } else {
+                console.error("Vapi start returned null. Call could not be initiated.");
+                setErrorMessage("Failed to start call: Vapi did not return a call object.");
+                setIsLoading(false);
+                setStatus("Ready for Interview");
+            }
+
         } catch (error: any) {
             console.error("Failed to start Vapi interview:", error);
             setIsLoading(false);
@@ -343,7 +288,7 @@ export default function VapiInterviewBot() {
     };
 
 
-    // --- Rendered UI ---
+    // --- Rendered UI (no changes) ---
     return (
         <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex flex-col items-center justify-center p-4 sm:p-6 lg:p-8">
             <div className="bg-white p-6 sm:p-8 rounded-xl shadow-2xl w-full max-w-sm sm:max-w-md lg:max-w-lg relative">
@@ -402,7 +347,7 @@ export default function VapiInterviewBot() {
                             className={`flex-1 bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-4 rounded-lg focus:outline-none focus:shadow-outline transition duration-200
                                 ${isLoading ? 'bg-red-400 cursor-not-allowed' : 'shadow-md hover:shadow-lg'}`}
                         >
-                            {isLoading ? "Ending Interview..." : "End Interview"}
+                            {isCallActive ? "End Interview" : "Interview Ended"}
                         </button>
                     )}
 
@@ -447,7 +392,7 @@ export default function VapiInterviewBot() {
                     )}
                 </div>
 
-                {/* NEW: Interview Score Display - Visible only when call is NOT active and score exists/is loading */}
+                {/* Interview Score Display */}
                 {!isCallActive && (interviewScore || isScoring) && (
                     <div className="mt-6 text-center bg-blue-50 p-4 rounded-lg border border-blue-200 shadow-inner">
                         <h2 className="text-xl font-semibold mb-2 text-blue-800">Interview Score:</h2>
@@ -469,3 +414,6 @@ export default function VapiInterviewBot() {
         </div>
     );
 }
+
+
+
