@@ -376,7 +376,7 @@ export default function VapiInterviewBot() {
                         disabled={isLoading || isCallActive}
                     />
                     <p className="text-xs text-gray-500 mt-1">
-                        If empty, the component will use the default "Nexus AI Interviewer" configuration defined in this file.
+                        If empty, the component will use the default `Nexus AI Interviewer` configuration defined in this file.
                     </p>
                 </div>
 
