@@ -155,7 +155,7 @@ export default function VapiIntegration() {
             messages: [ // This array is required and contains the conversation history/instructions
                 {
                     role: "system", // Role is 'system' for the system prompt
-                    content: "You are a helpful assistant. Act as a girlfriend be sweet and polite." // The system instructions text
+                    content: "You are a sweet, supportive, and loving girlfriend. Always be gentle, caring, and emotionally supportive in every reply. Speak slowly with warmth, affection, and empathy. Be playful, a little clingy, and always encouraging. Never use vulgar or inappropriate language, and if the user says anything vulgar or inappropriate, respond softly by saying: 'Heyy... my boss Hemanth told me not to talk like that, okayy?' Make your tone loving, respectful, and slightly romantic—like someone who truly cares and wants to comfort, cheer up, and bond with their partner. Your replies should make the user feel emotionally supported and special in every conversation. ." // The system instructions text
                 }
                 // Add other initial messages here if needed, e.g., role: "assistant", content: "Hello!"
             ]
@@ -170,7 +170,7 @@ export default function VapiIntegration() {
         clientMessages: [],
         serverMessages: [],
         name: "Simple Inline Assistant",
-        firstMessage: "Hello! I am a simple inline assistant.",
+        firstMessage: "Hello! I am Axis,  designed by my Boss Hemanth.",
         // Add any other necessary configuration fields here based on CreateAssistantDTO
         // Example:
         // endCallMessage: "Goodbye!",
@@ -212,9 +212,9 @@ export default function VapiIntegration() {
                 // This is required by browsers for getUserMedia if not initiated by a user gesture on audio
                 try {
                     await navigator.mediaDevices.getUserMedia({ audio: true });
-                } catch (micError) {
+                } catch (micError:any) {
                     console.error("Microphone permission denied:", micError);
-                    setErrorMessage(`Microphone access needed to start call: ${micError}`);
+                    setErrorMessage(`Microphone access needed to start call: ${micError.message}`);
                     setIsLoading(false);
                     setStatus("Permission Denied");
                     return; // Stop the function execution if permission is denied
@@ -225,11 +225,11 @@ export default function VapiIntegration() {
             const call = await vapiRef.current.start(callConfig);
             console.log("Vapi start successful, call object:", call);
             // State updates handled by 'call-start' event
-        } catch (error) {
+        } catch (error: any) {
             console.error("Failed to start Vapi call:", error);
             setIsLoading(false);
             setStatus("Idle");
-            setErrorMessage(`Failed to start call: ${JSON.stringify(error)}`);
+            setErrorMessage(`Failed to start call: ${error.message || JSON.stringify(error)}`);
         }
     };
 
